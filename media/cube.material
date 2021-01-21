@@ -1,0 +1,9 @@
+material cube_color {
+	technique {
+		pass {
+			ambient 1 0 0
+			diffuse 1 0 0
+			emissive 0 0 0 1
+		}
+	}
+}
