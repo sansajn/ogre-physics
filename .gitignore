@@ -1,5 +1,11 @@
 /*.o
+/*.swp
 /.sconsign.dblite
 /cube_rain
-/physics.*
+/physics.config
+/physics.creator*
+/physics.c*flags
+/physics.files
+/physics.includes
 /imgui.ini
+/config.log

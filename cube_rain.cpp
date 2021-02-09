@@ -12,6 +12,8 @@
 #include <OgreImGuiOverlay.h>
 #include <OgreImGuiInputListener.h>
 #include "axis.hpp"
+#include "physics.hpp"
+#include "cast.hpp"
 
 using std::vector;
 using std::string, std::to_string;
@@ -20,7 +22,7 @@ using std::random_device, std::default_random_engine;
 using std::cout, std::endl;
 using std::chrono::steady_clock, std::chrono::duration;
 
-using Ogre::SceneManager, // Ogre::vector name collision with std::vector so `using namespace Ogre` cannot be used
+using Ogre::SceneManager,  // Ogre::vector name collision with std::vector so `using namespace Ogre` cannot be used there
 	Ogre::SceneNode,
 	Ogre::FrameListener,
 	Ogre::FrameEvent,
@@ -48,14 +50,16 @@ struct cube_object
 	Real scale;  // value between 0.7 and 1.4 used to scale cube model
 };
 
+// helpers
 cube_object new_cube();
+btTransform translate(Vector3 const & v);
 
 
-class ogre_app
+class cube_rain
 	: public ApplicationContext, public InputListener, public RenderTargetListener
 {
 public:
-	ogre_app();
+	cube_rain();
 	void go();  //!< app entry point
 
 private:
@@ -80,7 +84,10 @@ private:
 	void preViewportUpdate(RenderTargetViewportEvent const & evt) override;
 
 	// helpers
+	void add_cubes(size_t n);
+	void remove_cubes(size_t n);
 	SceneNode * create_cube_node(SceneManager & scene, cube_object const & cube);
+	physics::body * create_cube_body(cube_object const & cube);
 
 	unique_ptr<CameraMan> _cameraman;
 	vector<cube_object> _cubes;  // cube pool
@@ -91,6 +98,10 @@ private:
 
 	// settings
 	int _cube_count = 300;
+
+	// physics related stuff ...
+	physics::world _world;
+	vector<physics::body *> _cube_bodies;  // btRigidBody is not default constructible, that is why *
 };
 
 namespace std {
@@ -99,52 +110,47 @@ string to_string(CameraStyle style);
 
 }  // std
 
-void ogre_app::update(duration<double> dt)
+void cube_rain::update(duration<double> dt)
 {
 	// handle number of cubes option (if changed)
 	int prev_cube_count = size(_cubes);
-	_cubes.resize(_cube_count);
 
-	SceneNode & root = *_scene->getRootSceneNode();
+	if (_cube_count < prev_cube_count)
+		remove_cubes(prev_cube_count - _cube_count);
+	else if (_cube_count > prev_cube_count)
+		add_cubes(_cube_count - prev_cube_count);
 
-	if (_cube_count < prev_cube_count)  // remove additional cube nodes from scene graph
-	{
-		for_each(begin(_cube_nodes) + _cube_count, end(_cube_nodes),
-			[&root](SceneNode * nd){root.removeChild(nd);});
-
-		_cube_nodes.resize(_cube_count);
-	}
-	else if (_cube_count > prev_cube_count)  // add additional cubes to scene graph
-	{
-		_cubes.resize(_cube_count);
-		_cube_nodes.resize(_cube_count);
-
-		for (int i = 0; i < _cube_count - prev_cube_count; ++i)
-		{
-			cube_object & cube = _cubes[prev_cube_count + i];
-			cube = new_cube();
-
-			_cube_nodes[prev_cube_count + i] = create_cube_node(*_scene, cube);
-		}
-	}
+	_world.simulate(dt.count());
 
 	// update cubes
-	constexpr Real fall_speed = 3;
+	assert(size(_cubes) == size(_cube_nodes) && size(_cubes) == size(_cube_bodies));
+
 	constexpr Real fall_off_threshold = -10.0;
 
 	auto cube_node_it = begin(_cube_nodes);
+	auto cube_body_it = begin(_cube_bodies);
 	for (cube_object & cube : _cubes)
 	{
-		cube.position.y -= fall_speed * (2.0 - cube.scale) * dt.count();
-		if (cube.position.y < fall_off_threshold)
+		if (cube.position.y > fall_off_threshold)
+		{
+			cube.position = to_ogre((*cube_body_it)->position());
+		}
+		else  // reuse cubes too far from start position
+		{
 			cube = new_cube();
+			(*cube_body_it)->rigid_body().setWorldTransform(translate(cube.position));
+		}
 
-		(*cube_node_it)->setPosition(cube.position);  // update scene position
+		btQuaternion orientation = (*cube_body_it)->rigid_body().getOrientation();
+		++cube_body_it;
+
+		(*cube_node_it)->setPosition(cube.position);  // update cube position
+		(*cube_node_it)->setOrientation(to_ogre(orientation));
 		++cube_node_it;
 	}
 }
 
-void ogre_app::setup_scene(SceneManager & scene)
+void cube_rain::setup_scene(SceneManager & scene)
 {
 	SceneNode * root_nd = scene.getRootSceneNode();
 
@@ -171,15 +177,7 @@ void ogre_app::setup_scene(SceneManager & scene)
 
 	getRenderWindow()->addViewport(camera);  // render into the main window
 
-	auto cube_nodes_it = begin(_cube_nodes);
-
-	// add cubes to scene
-	for (cube_object & cube : _cubes)
-	{
-		// save node for later update
-		*cube_nodes_it = create_cube_node(scene, cube);
-		++cube_nodes_it;
-	}
+	add_cubes(_cube_count);
 
 	// axis
 	AxisObject axis;
@@ -188,7 +186,7 @@ void ogre_app::setup_scene(SceneManager & scene)
 	axis_nd->attachObject(axis_model);
 }
 
-void ogre_app::update_gui()
+void cube_rain::update_gui()
 {
 	ImGui::Begin("Info");  // begin window
 
@@ -199,7 +197,7 @@ void ogre_app::update_gui()
 	ImGui::Render();
 }
 
-void ogre_app::setup()
+void cube_rain::setup()
 {
 	ApplicationContext::setup();
 	addInputListener(this);  // register for input events
@@ -229,7 +227,7 @@ void ogre_app::setup()
 	_input_listeners = InputListenerChain({_imgui_listener.get(), _cameraman.get()});
 }
 
-void ogre_app::go()
+void cube_rain::go()
 {
 	initApp();
 
@@ -239,18 +237,13 @@ void ogre_app::go()
 	closeApp();
 }
 
-ogre_app::ogre_app()
+cube_rain::cube_rain()
 	: ApplicationContext{"ogre cuberain"}
 {
-	// initialize cubes
-	_cubes.resize(_cube_count);
-	for (cube_object & cube : _cubes)
-		cube = new_cube();
-
-	_cube_nodes.resize(_cube_count);
+	_world.native().setGravity(btVector3{0,0,0});  // turn off gravity
 }
 
-bool ogre_app::keyPressed(KeyboardEvent const & evt)
+bool cube_rain::keyPressed(KeyboardEvent const & evt)
 {
 	if (evt.keysym.sym == SDLK_ESCAPE)
 	{
@@ -263,44 +256,44 @@ bool ogre_app::keyPressed(KeyboardEvent const & evt)
 	return true;
 }
 
-bool ogre_app::keyReleased(KeyboardEvent const & evt)
+bool cube_rain::keyReleased(KeyboardEvent const & evt)
 {
 	return _input_listeners.keyReleased(evt);
 }
 
-bool ogre_app::mouseMoved(MouseMotionEvent const & evt)
+bool cube_rain::mouseMoved(MouseMotionEvent const & evt)
 {
 	return _input_listeners.mouseMoved(evt);
 }
 
-bool ogre_app::mousePressed(MouseButtonEvent const & evt)
+bool cube_rain::mousePressed(MouseButtonEvent const & evt)
 {
 	return _input_listeners.mousePressed(evt);
 }
 
-bool ogre_app::mouseReleased(MouseButtonEvent const & evt)
+bool cube_rain::mouseReleased(MouseButtonEvent const & evt)
 {
 	return _input_listeners.mouseReleased(evt);
 }
 
-void ogre_app::frameRendered(Ogre::FrameEvent const & evt)
+void cube_rain::frameRendered(Ogre::FrameEvent const & evt)
 {
 	_cameraman->frameRendered(evt);
 }
 
-bool ogre_app::textInput(TextInputEvent const & evt)
+bool cube_rain::textInput(TextInputEvent const & evt)
 {
 	return _input_listeners.textInput(evt);
 }
 
-bool ogre_app::frameStarted(FrameEvent const & evt)
+bool cube_rain::frameStarted(FrameEvent const & evt)
 {
 	duration<double> dt{evt.timeSinceLastFrame};
 	update(dt);
 	return ApplicationContext::frameStarted(evt);
 }
 
-void ogre_app::preViewportUpdate(RenderTargetViewportEvent const & evt)
+void cube_rain::preViewportUpdate(RenderTargetViewportEvent const & evt)
 {
 	if (!evt.source->getOverlaysEnabled())
 		return;
@@ -310,7 +303,54 @@ void ogre_app::preViewportUpdate(RenderTargetViewportEvent const & evt)
 	update_gui();
 }
 
-SceneNode * ogre_app::create_cube_node(SceneManager & scene, cube_object const & cube)
+void cube_rain::add_cubes(size_t n)
+{
+	size_t prev_cube_count = size(_cubes),
+		cube_count = prev_cube_count + n;
+
+	assert(size(_cubes) == size(_cube_nodes) && size(_cubes) == size(_cube_bodies));
+	_cubes.resize(cube_count);
+	_cube_nodes.resize(cube_count);
+	_cube_bodies.resize(cube_count);
+
+	assert(_scene);
+
+	for (size_t i = 0; i < n; ++i)  // for new cubes
+	{
+		size_t const idx = prev_cube_count + i;
+
+		cube_object & cube = _cubes[idx];
+		cube = new_cube();
+
+		_cube_nodes[idx] = create_cube_node(*_scene, cube);
+		_cube_bodies[idx] = create_cube_body(cube);
+	}
+}
+
+void cube_rain::remove_cubes(size_t n)
+{
+	assert(n <= size(_cube_nodes));
+
+	size_t cube_count = size(_cube_nodes) - n;
+
+	SceneNode & root = *_scene->getRootSceneNode();
+	for_each(begin(_cube_nodes) + cube_count, end(_cube_nodes),
+		[&root](SceneNode * nd){root.removeChild(nd);});
+	_cube_nodes.resize(cube_count);
+
+	for_each(begin(_cube_bodies) + cube_count, end(_cube_bodies),
+		[this](physics::body * b){
+			_world.remove_body(b);
+			delete b;
+	});
+	_cube_bodies.resize(cube_count);
+
+	_cubes.resize(cube_count);
+
+	assert(size(_cubes) == size(_cube_nodes) && size(_cubes) == size(_cube_bodies));
+}
+
+SceneNode * cube_rain::create_cube_node(SceneManager & scene, cube_object const & cube)
 {
 	Entity * cube_model = scene.createEntity(SceneManager::PT_CUBE);
 	cube_model->setMaterialName("cube_color");  // see media/cube.material
@@ -324,6 +364,30 @@ SceneNode * ogre_app::create_cube_node(SceneManager & scene, cube_object const &
 	return nd;
 }
 
+physics::body * cube_rain::create_cube_body(cube_object const & cube)
+{
+	btScalar mass = 1;
+	physics::body * result = new physics::body{
+		make_unique<btBoxShape>(btVector3{.5, .5, .5} * cube.scale),
+		physics::translate(to_bullet(cube.position)),
+		mass
+	};
+
+	btScalar const fall_speed = 3 * (2.0 - cube.scale);
+	result->rigid_body().setLinearVelocity(btVector3{0, -fall_speed, 0});
+
+	_world.add_body(result);
+
+	return result;
+}
+
+btTransform translate(Vector3 const & v)
+{
+	btTransform T;
+	T.setIdentity();
+	T.setOrigin(btVector3{v.x, v.y, v.z});
+	return T;
+}
 
 cube_object new_cube()
 {
@@ -357,7 +421,7 @@ string to_string(CameraStyle style)
 
 int main(int argc, char * argv[])
 {
-	ogre_app app;
+	cube_rain app;
 	app.go();
 	return 0;
 }
