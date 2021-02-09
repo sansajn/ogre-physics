@@ -11,7 +11,6 @@ def build():
 
 	cpp17 = configure(cpp17, dependencies)
 
-	cpp17.Program('fall.cpp')
 	cpp17.Program('cube_rain', ['cube_rain.cpp', 'axis.cpp', 'physics.cpp'])
 
 
