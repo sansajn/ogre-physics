@@ -2,6 +2,7 @@
 /*.swp
 /.sconsign.dblite
 /cube_rain
+/fall_test
 /physics.config
 /physics.creator*
 /physics.c*flags

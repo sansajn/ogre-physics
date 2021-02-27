@@ -11,7 +11,11 @@ def build():
 
 	cpp17 = configure(cpp17, dependencies)
 
-	cpp17.Program('cube_rain', ['cube_rain.cpp', 'axis.cpp', 'physics.cpp'])
+	common = cpp17.Object(['axis.cpp', 'physics.cpp'])
+
+	cpp17.Program('cube_rain', ['cube_rain.cpp', common])
+
+	cpp17.Program(['fall_test.cpp', common])
 
 
 def configure(env, dependency_list):
