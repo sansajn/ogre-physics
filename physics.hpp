@@ -1,4 +1,5 @@
 #pragma once
+#include <set>
 #include <memory>
 #include <iosfwd>
 #include <boost/range/iterator_range.hpp>
@@ -32,6 +33,12 @@ private:
 	btRigidBody _body;
 };
 
+struct collision_listener
+{
+	virtual void on_collision(btCollisionObject * a, btCollisionObject * b) {}
+	virtual void on_separation(btCollisionObject * a, btCollisionObject * b) {}
+};
+
 class world
 {
 public:
@@ -44,14 +51,27 @@ public:
 
 	collision_range collision_objects();
 
+	void subscribe_collisions(collision_listener * l);
+	void unsubscribe_collisions(collision_listener * l);
+
 	btDiscreteDynamicsWorld & native() {return _world;}
 
 private:
+	using collision_pairs = std::set<std::pair<btCollisionObject const *,
+		btCollisionObject const *>>;
+
+	void handle_collisions();
+	void collision_event(btCollisionObject * a, btCollisionObject * b);
+	void separation_event(btCollisionObject * a, btCollisionObject * b);
+
 	btDefaultCollisionConfiguration _config;
 	btCollisionDispatcher _dispatcher;
 	btDbvtBroadphase _pair_cache;
 	btSequentialImpulseConstraintSolver _solver;
 	btDiscreteDynamicsWorld _world;
+
+	collision_pairs _last_collisions;
+	std::vector<collision_listener *> _collision_listeners;
 };
 
 // helpers

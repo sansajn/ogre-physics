@@ -1,5 +1,8 @@
 // physics in cube rain scence
 #include <vector>
+#include <set>
+#include <map>
+#include <utility>
 #include <string>
 #include <memory>
 #include <random>
@@ -15,12 +18,15 @@
 #include "physics.hpp"
 #include "cast.hpp"
 
-using std::vector;
+using std::vector, std::set, std::map;
+using std::pair;
 using std::string, std::to_string;
 using std::unique_ptr, std::make_unique;
 using std::random_device, std::default_random_engine;
 using std::cout, std::endl;
 using std::chrono::steady_clock, std::chrono::duration;
+
+using namespace std::chrono_literals;
 
 using Ogre::SceneManager,  // Ogre::vector name collision with std::vector so `using namespace Ogre` cannot be used there
 	Ogre::SceneNode,
@@ -53,6 +59,11 @@ struct cube_object
 // helpers
 cube_object new_cube();
 btTransform translate(Vector3 const & v);
+
+struct collision_record
+{
+	steady_clock::time_point t_impact;
+};
 
 
 class cube_rain
@@ -87,11 +98,12 @@ private:
 	void add_cubes(size_t n);
 	void remove_cubes(size_t n);
 	SceneNode * create_cube_node(SceneManager & scene, cube_object const & cube);
-	physics::body * create_cube_body(cube_object const & cube);
+	physics::body * create_cube_body(cube_object const & cube, SceneNode * nd);
 
 	unique_ptr<CameraMan> _cameraman;
 	vector<cube_object> _cubes;  // cube pool
 	vector<SceneNode *> _cube_nodes;
+	map<SceneNode *, collision_record> _highlighted_cube_nodes;
 	InputListenerChain _input_listeners;
 	unique_ptr<ImGuiInputListener> _imgui_listener;
 	SceneManager * _scene = nullptr;
@@ -110,6 +122,22 @@ string to_string(CameraStyle style);
 
 }  // std
 
+
+struct collision_collector : public physics::collision_listener
+{
+	set<btCollisionObject *> result;
+
+	void clear()
+	{
+		result.clear();
+	}
+
+	void on_collision(btCollisionObject * a, btCollisionObject * b) override
+	{
+		result.insert({a, b});
+	}
+};
+
 void cube_rain::update(duration<double> dt)
 {
 	// handle number of cubes option (if changed)
@@ -120,9 +148,40 @@ void cube_rain::update(duration<double> dt)
 	else if (_cube_count > prev_cube_count)
 		add_cubes(_cube_count - prev_cube_count);
 
+	collision_collector collisions;
+	_world.subscribe_collisions(&collisions);
+
 	_world.simulate(dt.count());
 
-	// update cubes
+	// highlight all collided cubes
+	steady_clock::time_point now = steady_clock::now();
+
+	// find out all collided cubes and highlight them
+	for (btCollisionObject * o : collisions.result)
+	{
+		SceneNode * nd = static_cast<SceneNode *>(o->getUserPointer());
+		_highlighted_cube_nodes.insert_or_assign(nd, collision_record{now});
+		dynamic_cast<Entity *>(nd->getAttachedObject(0))->setMaterialName("cube_collision_color");
+	}
+
+	// removes old highlights (after 1s)
+	vector<map<SceneNode *, collision_record>::const_iterator> old_highlights;
+	for (auto it = cbegin(_highlighted_cube_nodes); it != cend(_highlighted_cube_nodes); ++it)
+	{
+		if (now - it->second.t_impact > 250ms)
+		{
+			old_highlights.push_back(it);
+			dynamic_cast<Entity *>(it->first->getAttachedObject(0))->setMaterialName("cube_color");
+		}
+	}
+
+	for (auto it : old_highlights)
+		_highlighted_cube_nodes.erase(it);
+
+
+	_world.unsubscribe_collisions(&collisions);
+
+	// update cubes (position, rotations)
 	assert(size(_cubes) == size(_cube_nodes) && size(_cubes) == size(_cube_bodies));
 
 	constexpr Real fall_off_threshold = -10.0;
@@ -322,8 +381,9 @@ void cube_rain::add_cubes(size_t n)
 		cube_object & cube = _cubes[idx];
 		cube = new_cube();
 
-		_cube_nodes[idx] = create_cube_node(*_scene, cube);
-		_cube_bodies[idx] = create_cube_body(cube);
+		SceneNode * nd = create_cube_node(*_scene, cube);
+		_cube_nodes[idx] = nd;
+		_cube_bodies[idx] = create_cube_body(cube, nd);
 	}
 }
 
@@ -364,7 +424,7 @@ SceneNode * cube_rain::create_cube_node(SceneManager & scene, cube_object const 
 	return nd;
 }
 
-physics::body * cube_rain::create_cube_body(cube_object const & cube)
+physics::body * cube_rain::create_cube_body(cube_object const & cube, SceneNode * nd)
 {
 	btScalar mass = 1;
 	physics::body * result = new physics::body{
@@ -375,6 +435,8 @@ physics::body * cube_rain::create_cube_body(cube_object const & cube)
 
 	btScalar const fall_speed = 3 * (2.0 - cube.scale);
 	result->rigid_body().setLinearVelocity(btVector3{0, -fall_speed, 0});
+
+	result->rigid_body().setUserPointer(nd);  // link with OGRE
 
 	_world.add_body(result);
 
