@@ -110,6 +110,7 @@ private:
 
 	// settings
 	int _cube_count = 300;
+	double _time_dilation = 1.0;
 
 	// physics related stuff ...
 	physics::world _world;
@@ -309,6 +310,13 @@ bool cube_rain::keyPressed(KeyboardEvent const & evt)
 		getRoot()->queueEndRendering();
 		return true;
 	}
+	else if (evt.keysym.sym == SDLK_SPACE)
+	{
+		if (_time_dilation == 0.0)  // comparison is safe, not any math operations
+			_time_dilation = 1.0;
+		else
+			_time_dilation = 0.0;
+	}
 	else
 		_input_listeners.keyPressed(evt);
 
@@ -347,7 +355,7 @@ bool cube_rain::textInput(TextInputEvent const & evt)
 
 bool cube_rain::frameStarted(FrameEvent const & evt)
 {
-	duration<double> dt{evt.timeSinceLastFrame};
+	duration<double> dt{evt.timeSinceLastFrame * _time_dilation};
 	update(dt);
 	return ApplicationContext::frameStarted(evt);
 }
@@ -456,13 +464,19 @@ cube_object new_cube()
 	static random_device rd;
 	static default_random_engine rand{rd()};
 
-	return cube_object{
-		Vector3{
-			(rand() % 15) - 7.f,
-			7.f + (rand() % 30),
-			(rand() % 15) - 7.f},
-		0.7f + ((rand() % 70)/100.f)  // scale between 0.7 and 0.7+0.7
-	};
+	// generate three grid cube indices for 10x10x10 grid cube
+	constexpr unsigned size = 10;
+	unsigned i = rand() % size,
+		j = rand() % size,
+		k = rand() % size;
+
+	float x = (i - 0.5f*size) * (1.4f+1.f),  // from -7 to 7
+		y = (j + 7.f) * (1.4f+1.f),
+		z = (k - 0.5f*size) * (1.4f+1.f);
+
+	float scale = 0.7f + (rand() % 71)/100.f;  // scale between 0.7 and 0.7+0.7
+
+	return cube_object{Vector3{x, y, z}, scale};
 }
 
 
